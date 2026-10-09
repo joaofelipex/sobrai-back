@@ -2,7 +2,7 @@ const sqlite3 = require('sqlite3').verbose();
 const { open } = require('sqlite');
 const path = require('path');
 
-const DB_FILE = path.join(__dirname, 'sobrai.db');
+const DB_FILE = process.env.SOBRAI_DB || path.join(__dirname, 'sobrai.db');
 
 // Conexão única reaproveitada por todas as rotas.
 let dbPromise = null;
@@ -68,6 +68,53 @@ const initDb = async () => {
       nextDueDate TEXT NOT NULL,
       isActive INTEGER NOT NULL DEFAULT 1
     );
+
+    -- NFS-e Nacional: dados fiscais do emitente (linha única)
+    CREATE TABLE IF NOT EXISTS fiscal_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      cnpj TEXT NOT NULL,
+      inscricaoMunicipal TEXT,
+      codMunicipioIbge TEXT NOT NULL,
+      opSimpNac TEXT NOT NULL,
+      regApTribSN TEXT,
+      regEspTrib TEXT NOT NULL DEFAULT '0',
+      serie TEXT NOT NULL DEFAULT '1',
+      proximoNumero INTEGER NOT NULL DEFAULT 1,
+      codTribNac TEXT NOT NULL,
+      codTribMun TEXT,
+      aliquotaIss REAL
+    );
+
+    -- Certificado A1 (.pfx) e senha, sempre criptografados (ver lib/nfse/secret-store.js)
+    CREATE TABLE IF NOT EXISTS fiscal_certificate (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      pfxEnc TEXT NOT NULL,
+      passEnc TEXT NOT NULL,
+      subject TEXT,
+      validFrom TEXT,
+      validTo TEXT,
+      uploadedAt TEXT NOT NULL
+    );
+
+    -- Uma linha por tentativa de emissão de NFS-e para uma nota fiscal
+    CREATE TABLE IF NOT EXISTS nfse_documents (
+      id TEXT PRIMARY KEY,
+      invoiceId TEXT NOT NULL,
+      ambiente INTEGER NOT NULL,
+      dpsId TEXT NOT NULL,
+      nDPS INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      chaveAcesso TEXT,
+      numeroNfse TEXT,
+      xmlDps TEXT,
+      xmlNfse TEXT,
+      erro TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_nfse_invoice ON nfse_documents(invoiceId);
+    -- Garante no banco que uma nota fiscal não tenha duas NFS-e em andamento/autorizadas.
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_nfse_active ON nfse_documents(invoiceId) WHERE status IN ('processing', 'authorized');
   `);
 
   // Migração: transações antigas não tinham invoiceId.
@@ -92,6 +139,14 @@ const initDb = async () => {
       address TEXT
     );
   `);
+
+  // Emissões interrompidas (servidor caiu no meio): o resultado na SEFIN é desconhecido.
+  await db.run(
+    `UPDATE nfse_documents SET status = 'indeterminate', updatedAt = ?,
+       erro = 'Emissão interrompida; confira no portal da NFS-e se a nota foi autorizada antes de tentar de novo'
+     WHERE status = 'processing'`,
+    new Date().toISOString()
+  );
 
   console.log('Database initialized');
   return db;
