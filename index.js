@@ -13,13 +13,15 @@ const goalsRouter = require('./routes/goals');
 const invoicesRouter = require('./routes/invoices');
 const recurringRouter = require('./routes/recurring');
 const insightsRouter = require('./routes/insights');
+const fiscalRouter = require('./routes/fiscal');
+const nfseRouter = require('./routes/nfse');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Em produção, defina CORS_ORIGIN (ex: https://app.exemplo.com). Em dev, qualquer origem.
 app.use(cors(process.env.CORS_ORIGIN ? { origin: process.env.CORS_ORIGIN.split(',') } : undefined));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' })); // o certificado .pfx chega em base64
 
 app.use('/api/transactions', transactionsRouter);
 app.use('/api/company-profile', companyProfileRouter);
@@ -28,6 +30,8 @@ app.use('/api/goals', goalsRouter);
 app.use('/api/invoices', invoicesRouter);
 app.use('/api/recurring', recurringRouter);
 app.use('/api/insights', insightsRouter);
+app.use('/api/fiscal', fiscalRouter);
+app.use('/api/nfse', nfseRouter);
 
 app.use(errorHandler);
 
