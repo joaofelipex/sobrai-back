@@ -1,73 +1,100 @@
-// Import the sqlite3 module, which is a driver for SQLite.
-// The verbose() method enables verbose logging for easier debugging.
 const sqlite3 = require('sqlite3').verbose();
-
-// Import the 'sqlite' package, which provides a Promise-based API for interacting with SQLite.
 const { open } = require('sqlite');
+const path = require('path');
 
-// Define the name of the database file.
-const DB_FILE = 'sobrai.db';
+const DB_FILE = path.join(__dirname, 'sobrai.db');
 
-// an async function to open the database connection.
-const openDb = async () => {
-  // The 'open' function returns a Promise that resolves to a database object.
-  // The 'filename' property specifies the path to the database file.
-  // The 'driver' property specifies the database driver to use.
-  return open({
-    filename: DB_FILE,
-    driver: sqlite3.Database
-  });
+// Conexão única reaproveitada por todas as rotas.
+let dbPromise = null;
+const openDb = () => {
+  if (!dbPromise) {
+    dbPromise = open({ filename: DB_FILE, driver: sqlite3.Database }).then(async (db) => {
+      await db.exec('PRAGMA foreign_keys = ON;');
+      return db;
+    });
+  }
+  return dbPromise;
 };
 
-// an async function to initialize the database.
+const columnsOf = async (db, table) =>
+  (await db.all(`PRAGMA table_info(${table})`)).map((c) => c.name);
+
 const initDb = async () => {
-  // Open the database connection.
   const db = await openDb();
-  
-  // Use the 'exec' method to execute SQL commands to create the tables.
-  // The 'exec' method can execute multiple SQL statements at once.
+
   await db.exec(`
     CREATE TABLE IF NOT EXISTS transactions (
       id TEXT PRIMARY KEY,
-      type TEXT,
-      description TEXT,
-      amount REAL,
-      date TEXT,
-      category TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS company_profile (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      industry TEXT,
-      size TEXT,
-      annualRevenue REAL,
-      taxRegime TEXT,
-      accountingSystem TEXT,
-      bankIntegration BOOLEAN
+      type TEXT NOT NULL,
+      description TEXT NOT NULL,
+      amount REAL NOT NULL,
+      date TEXT NOT NULL,
+      category TEXT,
+      invoiceId TEXT
     );
 
     CREATE TABLE IF NOT EXISTS clients (
       id TEXT PRIMARY KEY,
-      name TEXT,
+      name TEXT NOT NULL,
       document TEXT
     );
 
     CREATE TABLE IF NOT EXISTS goals (
       id TEXT PRIMARY KEY,
-      name TEXT,
-      type TEXT,
-      targetAmount REAL,
-      deadline TEXT
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      targetAmount REAL NOT NULL,
+      deadline TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS invoices (
+      id TEXT PRIMARY KEY,
+      clientId TEXT NOT NULL,
+      description TEXT,
+      amount REAL NOT NULL,
+      taxAmount REAL NOT NULL,
+      issueDate TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'issued'
+    );
+
+    CREATE TABLE IF NOT EXISTS recurring_transactions (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      amount REAL NOT NULL,
+      type TEXT NOT NULL,
+      category TEXT,
+      frequency TEXT NOT NULL DEFAULT 'monthly',
+      startDate TEXT NOT NULL,
+      nextDueDate TEXT NOT NULL,
+      isActive INTEGER NOT NULL DEFAULT 1
     );
   `);
 
-  // Log a message to the console indicating that the database has been initialized.
+  // Migração: transações antigas não tinham invoiceId.
+  if (!(await columnsOf(db, 'transactions')).includes('invoiceId')) {
+    await db.exec('ALTER TABLE transactions ADD COLUMN invoiceId TEXT');
+  }
+
+  // Migração: o schema antigo do perfil (industry, size...) não correspondia ao model do front.
+  const profileCols = await columnsOf(db, 'company_profile');
+  if (profileCols.length && !profileCols.includes('monthlyRevenue')) {
+    await db.exec('DROP TABLE company_profile');
+  }
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS company_profile (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      monthlyRevenue REAL NOT NULL DEFAULT 0,
+      cnpj TEXT,
+      phone TEXT,
+      email TEXT,
+      address TEXT
+    );
+  `);
+
   console.log('Database initialized');
-  
-  // Return the database object.
   return db;
 };
 
-// Export the 'initDb' function and the 'openDb' function so they can be used in other modules.
 module.exports = { initDb, openDb };

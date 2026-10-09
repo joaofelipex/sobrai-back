@@ -1,63 +1,46 @@
 const express = require('express');
 const router = express.Router();
 const { openDb } = require('../database');
+const { wrap, newId, validate } = require('../lib/http');
 
-// GET all goals
-router.get('/', async (req, res) => {
-  console.log('GET /api/goals called');
+const schema = {
+  name: { type: 'string', required: true },
+  type: { type: 'string', required: true, oneOf: ['revenue', 'savings'] },
+  targetAmount: { type: 'number', required: true, positive: true },
+  deadline: { type: 'date', required: true },
+};
+
+router.get('/', wrap(async (req, res) => {
   const db = await openDb();
-  const goals = await db.all('SELECT * FROM goals');
-  res.json(goals);
-});
+  res.json(await db.all('SELECT * FROM goals'));
+}));
 
-// POST a new goal
-router.post('/', async (req, res) => {
-  const { name, type, targetAmount, deadline } = req.body;
-  const newGoal = { id: Date.now().toString(), name, type, targetAmount, deadline };
-  
+router.post('/', wrap(async (req, res) => {
+  const g = { id: newId(), ...validate(req.body, schema) };
   const db = await openDb();
   await db.run(
     'INSERT INTO goals (id, name, type, targetAmount, deadline) VALUES (?, ?, ?, ?, ?)',
-    [newGoal.id, newGoal.name, newGoal.type, newGoal.targetAmount, newGoal.deadline]
+    [g.id, g.name, g.type, g.targetAmount, g.deadline]
   );
-  
-  console.log('POST /api/goals - Added:', newGoal);
-  res.status(201).json(newGoal);
-});
+  res.status(201).json(g);
+}));
 
-// PUT (update) a goal
-router.put('/:id', async (req, res) => {
-  const { id } = req.params;
-  const { name, type, targetAmount, deadline } = req.body;
-  
+router.put('/:id', wrap(async (req, res) => {
+  const g = validate(req.body, schema);
   const db = await openDb();
   const result = await db.run(
     'UPDATE goals SET name = ?, type = ?, targetAmount = ?, deadline = ? WHERE id = ?',
-    [name, type, targetAmount, deadline, id]
+    [g.name, g.type, g.targetAmount, g.deadline, req.params.id]
   );
+  if (!result.changes) return res.status(404).json({ message: 'Goal not found' });
+  res.json(await db.get('SELECT * FROM goals WHERE id = ?', req.params.id));
+}));
 
-  if (result.changes > 0) {
-    const updatedGoal = await db.get('SELECT * FROM goals WHERE id = ?', id);
-    console.log(`PUT /api/goals/${id} - Updated:`, updatedGoal);
-    res.json(updatedGoal);
-  } else {
-    res.status(404).json({ message: 'Goal not found' });
-  }
-});
-
-// DELETE a goal
-router.delete('/:id', async (req, res) => {
-  const { id } = req.params;
-  
+router.delete('/:id', wrap(async (req, res) => {
   const db = await openDb();
-  const result = await db.run('DELETE FROM goals WHERE id = ?', id);
-
-  if (result.changes > 0) {
-    console.log(`DELETE /api/goals/${id} - Deleted`);
-    res.status(204).send();
-  } else {
-    res.status(404).json({ message: 'Goal not found' });
-  }
-});
+  const result = await db.run('DELETE FROM goals WHERE id = ?', req.params.id);
+  if (!result.changes) return res.status(404).json({ message: 'Goal not found' });
+  res.status(204).send();
+}));
 
 module.exports = router;

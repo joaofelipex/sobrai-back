@@ -1,63 +1,48 @@
 const express = require('express');
 const router = express.Router();
 const { openDb } = require('../database');
+const { wrap, newId, validate } = require('../lib/http');
 
-// GET all transactions
-router.get('/', async (req, res) => {
-  console.log('GET /api/transactions called');
+const schema = {
+  type: { type: 'string', required: true, oneOf: ['revenue', 'expense'] },
+  description: { type: 'string', required: true },
+  amount: { type: 'number', required: true, positive: true },
+  date: { type: 'date', required: true },
+  category: { type: 'string' },
+  invoiceId: { type: 'string' },
+};
+
+router.get('/', wrap(async (req, res) => {
   const db = await openDb();
-  const transactions = await db.all('SELECT * FROM transactions');
-  res.json(transactions);
-});
+  res.json(await db.all('SELECT * FROM transactions ORDER BY date DESC'));
+}));
 
-// POST a new transaction
-router.post('/', async (req, res) => {
-  const { type, description, amount, date, category } = req.body;
-  const newTransaction = { id: Date.now().toString(), type, description, amount, date, category };
-  
+router.post('/', wrap(async (req, res) => {
+  const t = { id: newId(), category: null, invoiceId: null, ...validate(req.body, schema) };
   const db = await openDb();
   await db.run(
-    'INSERT INTO transactions (id, type, description, amount, date, category) VALUES (?, ?, ?, ?, ?, ?)',
-    [newTransaction.id, newTransaction.type, newTransaction.description, newTransaction.amount, newTransaction.date, newTransaction.category]
+    'INSERT INTO transactions (id, type, description, amount, date, category, invoiceId) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [t.id, t.type, t.description, t.amount, t.date, t.category, t.invoiceId]
   );
-  
-  console.log('POST /api/transactions - Added:', newTransaction);
-  res.status(201).json(newTransaction);
-});
+  res.status(201).json(t);
+}));
 
-// PUT (update) a transaction
-router.put('/:id', async (req, res) => {
-  const { id } = req.params;
-  const { type, description, amount, date, category } = req.body;
-  
+router.put('/:id', wrap(async (req, res) => {
+  const t = { category: null, invoiceId: null, ...validate(req.body, schema) };
   const db = await openDb();
   const result = await db.run(
-    'UPDATE transactions SET type = ?, description = ?, amount = ?, date = ?, category = ? WHERE id = ?',
-    [type, description, amount, date, category, id]
+    'UPDATE transactions SET type = ?, description = ?, amount = ?, date = ?, category = ?, invoiceId = ? WHERE id = ?',
+    [t.type, t.description, t.amount, t.date, t.category, t.invoiceId, req.params.id]
   );
+  if (!result.changes) return res.status(404).json({ message: 'Transaction not found' });
+  res.json(await db.get('SELECT * FROM transactions WHERE id = ?', req.params.id));
+}));
 
-  if (result.changes > 0) {
-    const updatedTransaction = await db.get('SELECT * FROM transactions WHERE id = ?', id);
-    console.log(`PUT /api/transactions/${id} - Updated:`, updatedTransaction);
-    res.json(updatedTransaction);
-  } else {
-    res.status(404).json({ message: 'Transaction not found' });
-  }
-});
-
-// DELETE a transaction
-router.delete('/:id', async (req, res) => {
-  const { id } = req.params;
-  
+router.delete('/:id', wrap(async (req, res) => {
   const db = await openDb();
-  const result = await db.run('DELETE FROM transactions WHERE id = ?', id);
-
-  if (result.changes > 0) {
-    console.log(`DELETE /api/transactions/${id} - Deleted`);
-    res.status(204).send();
-  } else {
-    res.status(404).json({ message: 'Transaction not found' });
-  }
-});
+  const result = await db.run('DELETE FROM transactions WHERE id = ?', req.params.id);
+  if (!result.changes) return res.status(404).json({ message: 'Transaction not found' });
+  res.status(204).send();
+}));
 
 module.exports = router;
