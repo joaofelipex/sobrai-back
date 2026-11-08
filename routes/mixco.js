@@ -5,12 +5,23 @@ const express = require('express');
 const router = express.Router();
 const { openDb } = require('../database');
 const { wrap, newId, validate, ValidationError } = require('../lib/http');
+const { INTERNAL_CATEGORIES } = require('../lib/pluggy-sync');
+const { applyRules } = require('../lib/rules');
 
-const ACCOUNT_KINDS = ['checking', 'savings', 'cash', 'brokerage'];
+const ACCOUNT_KINDS = ['checking', 'savings', 'cash', 'brokerage', 'credit'];
 const ASSET_CLASSES = ['renda_fixa', 'renda_variavel', 'fiis', 'cripto', 'imoveis', 'veiculos', 'previdencia', 'outros'];
 const LIABILITY_KINDS = ['financiamento', 'emprestimo', 'cartao', 'outros'];
 // Classes que viram dinheiro rápido; entram na reserva de emergência.
 const LIQUID_CLASSES = ['renda_fixa'];
+
+// Saldo da conta: o informado pelo banco (Pluggy) ou saldo inicial + movimentos. Cartão de crédito
+// devedor tem saldo negativo e conta como dívida, não como caixa.
+const BALANCE_SQL = `ROUND(CASE WHEN mx_accounts.source = 'pluggy' AND mx_accounts.externalBalance IS NOT NULL
+  THEN mx_accounts.externalBalance
+  ELSE mx_accounts.initialBalance + COALESCE((SELECT SUM(CASE t.type WHEN 'income' THEN t.amount ELSE -t.amount END)
+    FROM mx_transactions t WHERE t.accountId = mx_accounts.id), 0) END, 2)`;
+// Pagamento de fatura e transferência entre contas suas não são gasto nem renda.
+const REAL_FLOW = `category NOT IN (${INTERNAL_CATEGORIES.map((c) => `'${c}'`).join(', ')})`;
 
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const monthOf = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -70,6 +81,8 @@ function crud({ table, schema, columns, beforeWrite, beforeDelete, select }) {
   return r;
 }
 
+router.use('/pluggy', require('./mixco-pluggy'));
+
 // ---- Contas (saldo = saldo inicial + receitas - despesas) --------------------------------
 router.use('/accounts', crud({
   table: 'mx_accounts',
@@ -85,10 +98,8 @@ router.use('/accounts', crud({
     const used = await db.get('SELECT COUNT(*) AS n FROM mx_transactions WHERE accountId = ?', id);
     return used.n ? 'A conta tem lançamentos; exclua-os antes de remover a conta' : null;
   },
-  select: `SELECT mx_accounts.*, ROUND(mx_accounts.initialBalance + COALESCE((
-      SELECT SUM(CASE t.type WHEN 'income' THEN t.amount ELSE -t.amount END)
-      FROM mx_transactions t WHERE t.accountId = mx_accounts.id), 0), 2) AS balance
-    FROM mx_accounts`,
+  select: `SELECT mx_accounts.id, mx_accounts.name, mx_accounts.kind, mx_accounts.institution, mx_accounts.initialBalance,
+    mx_accounts.source, ${BALANCE_SQL} AS balance FROM mx_accounts`,
 }));
 
 // ---- Lançamentos ------------------------------------------------------------------------
@@ -108,7 +119,7 @@ const txRouter = crud({
       throw new ValidationError('"accountId" não corresponde a nenhuma conta');
     }
     row.date = row.date.slice(0, 10);
-    row.category = row.category || 'Outros';
+    row.category = row.category || (await applyRules(db, row.description)) || 'Outros';
   },
 });
 // Lista filtrável por mês (?month=AAAA-MM), mais recentes primeiro.
@@ -154,6 +165,43 @@ router.use('/liabilities', crud({
   },
 }));
 
+// ---- Metas pessoais ---------------------------------------------------------------------
+router.use('/goals', crud({
+  table: 'mx_goals',
+  schema: {
+    name: { type: 'string', required: true },
+    targetAmount: { type: 'number', required: true, positive: true },
+    savedAmount: { type: 'number' },
+    deadline: { type: 'date', required: true },
+  },
+  columns: ['name', 'targetAmount', 'savedAmount', 'deadline'],
+  beforeWrite: async (db, row) => {
+    if (row.savedAmount == null) row.savedAmount = 0;
+    if (row.savedAmount < 0) throw new ValidationError('"savedAmount" não pode ser negativo');
+    row.deadline = row.deadline.slice(0, 10);
+  },
+}));
+
+// ---- Regras de categorização --------------------------------------------------------------
+const rulesRouter = crud({
+  table: 'mx_rules',
+  schema: { keyword: { type: 'string', required: true }, category: { type: 'string', required: true } },
+  columns: ['keyword', 'category'],
+  beforeWrite: async (db, row) => { row.keyword = row.keyword.trim(); },
+});
+// Reclassifica o que ficou em "Outros" usando as regras atuais.
+router.post('/rules/apply', wrap(async (req, res) => {
+  const db = await openDb();
+  const rows = await db.all("SELECT id, description FROM mx_transactions WHERE category = 'Outros'");
+  let changed = 0;
+  for (const t of rows) {
+    const category = await applyRules(db, t.description);
+    if (category) { await db.run('UPDATE mx_transactions SET category = ? WHERE id = ?', [category, t.id]); changed++; }
+  }
+  res.json({ checked: rows.length, changed });
+}));
+router.use('/rules', rulesRouter);
+
 // ---- Orçamento mensal por categoria -----------------------------------------------------
 router.get('/budgets', wrap(async (req, res) => {
   const db = await openDb();
@@ -175,23 +223,22 @@ router.delete('/budgets/:category', wrap(async (req, res) => {
   res.status(204).send();
 }));
 
-// ---- Resumo: patrimônio líquido, alocação, fluxo do mês e orçamento ---------------------
+// ---- Resumo: patrimônio líquido, alocação, fluxo, orçamento e alertas ---------------------
 router.get('/summary', wrap(async (req, res) => {
   const db = await openDb();
   const month = req.query.month ? assertMonth(String(req.query.month)) : monthOf();
 
-  const accounts = await db.all(`SELECT mx_accounts.initialBalance + COALESCE((
-      SELECT SUM(CASE t.type WHEN 'income' THEN t.amount ELSE -t.amount END)
-      FROM mx_transactions t WHERE t.accountId = mx_accounts.id), 0) AS balance FROM mx_accounts`);
+  const accounts = await db.all(`SELECT mx_accounts.kind AS kind, ${BALANCE_SQL} AS balance FROM mx_accounts`);
   const assets = await db.all('SELECT assetClass, invested, currentValue FROM mx_assets');
-  const liabilities = await db.all('SELECT balance, monthlyPayment FROM mx_liabilities');
+  const liabilities = await db.all('SELECT name, balance, monthlyRate, monthlyPayment FROM mx_liabilities');
 
-  const cash = accounts.reduce((s, a) => s + a.balance, 0);
+  const cash = accounts.filter((a) => a.kind !== 'credit').reduce((s, a) => s + a.balance, 0);
+  const cardDebt = accounts.filter((a) => a.kind === 'credit').reduce((s, a) => s + Math.max(0, -a.balance), 0);
   const assetsTotal = cash + assets.reduce((s, a) => s + a.currentValue, 0);
-  const liabilitiesTotal = liabilities.reduce((s, l) => s + l.balance, 0);
+  const liabilitiesTotal = liabilities.reduce((s, l) => s + l.balance, 0) + cardDebt;
   const netWorth = assetsTotal - liabilitiesTotal;
 
-  // Alocação por classe (caixa das contas entra como "caixa").
+  // Alocação por classe (o caixa das contas entra como "caixa").
   const byClass = new Map();
   if (cash > 0) byClass.set('caixa', cash);
   for (const a of assets) byClass.set(a.assetClass, (byClass.get(a.assetClass) || 0) + a.currentValue);
@@ -203,35 +250,51 @@ router.get('/summary', wrap(async (req, res) => {
   const invested = assets.reduce((s, a) => s + a.invested, 0);
   const current = assets.reduce((s, a) => s + a.currentValue, 0);
 
-  // Fluxo do mês escolhido.
-  const flow = await db.get(
+  const flowOf = (m) => db.get(
     `SELECT COALESCE(SUM(CASE WHEN type = 'income' THEN amount END), 0) AS income,
             COALESCE(SUM(CASE WHEN type = 'expense' THEN amount END), 0) AS expense
-     FROM mx_transactions WHERE substr(date, 1, 7) = ?`, month);
+     FROM mx_transactions WHERE substr(date, 1, 7) = ? AND ${REAL_FLOW}`, m);
+  const flow = await flowOf(month);
+  const prevFlow = await flowOf(shiftMonth(month, -1));
   const saved = flow.income - flow.expense;
 
-  // Orçamento: gasto do mês por categoria, com o limite quando existir.
-  const spent = await db.all(
+  // Tendência dos últimos 6 meses (até o mês escolhido).
+  const trend = [];
+  for (let i = 5; i >= 0; i--) {
+    const m = shiftMonth(month, -i);
+    const f = i === 0 ? flow : await flowOf(m);
+    trend.push({ month: m, income: round2(f.income), expense: round2(f.expense), saved: round2(f.income - f.expense) });
+  }
+
+  // Orçamento: gasto do mês por categoria (e mês anterior, para comparar), com o limite se existir.
+  const spentIn = async (m) => new Map((await db.all(
     `SELECT category, SUM(amount) AS spent FROM mx_transactions
-     WHERE type = 'expense' AND substr(date, 1, 7) = ? GROUP BY category`, month);
+     WHERE type = 'expense' AND substr(date, 1, 7) = ? AND ${REAL_FLOW} GROUP BY category`, m)).map((r) => [r.category, r.spent]));
+  const spentBy = await spentIn(month);
+  const prevSpentBy = await spentIn(shiftMonth(month, -1));
   const limits = new Map((await db.all('SELECT * FROM mx_budgets')).map((b) => [b.category, b.monthlyLimit]));
-  const categories = new Set([...spent.map((s) => s.category), ...limits.keys()]);
-  const spentBy = new Map(spent.map((s) => [s.category, s.spent]));
+  const categories = new Set([...spentBy.keys(), ...limits.keys()]);
   const budget = [...categories].map((category) => {
     const sp = spentBy.get(category) || 0;
     const limit = limits.get(category) ?? null;
-    return { category, spent: round2(sp), limit, percent: limit ? round2((sp / limit) * 100) : null, over: limit != null && sp > limit };
+    return {
+      category, spent: round2(sp), previous: round2(prevSpentBy.get(category) || 0), limit,
+      percent: limit ? round2((sp / limit) * 100) : null, over: limit != null && sp > limit,
+    };
   }).sort((a, b) => b.spent - a.spent);
 
   // Reserva de emergência: liquidez ÷ despesa média dos 3 meses anteriores ao mês escolhido.
-  const from = shiftMonth(month, -3);
   const past = await db.get(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM mx_transactions
-     WHERE type = 'expense' AND substr(date, 1, 7) >= ? AND substr(date, 1, 7) < ?`, [from, month]);
+     WHERE type = 'expense' AND substr(date, 1, 7) >= ? AND substr(date, 1, 7) < ? AND ${REAL_FLOW}`, [shiftMonth(month, -3), month]);
   const avgExpense = past.total / 3;
   const liquid = Math.max(cash, 0) + assets.filter((a) => LIQUID_CLASSES.includes(a.assetClass)).reduce((s, a) => s + a.currentValue, 0);
+  const emergencyMonths = avgExpense > 0 ? round2(liquid / avgExpense) : null;
 
-  // Foto do mês corrente (para a curva de evolução do patrimônio).
+  const { n: uncategorized } = await db.get(
+    "SELECT COUNT(*) AS n FROM mx_transactions WHERE category = 'Outros' AND substr(date, 1, 7) = ?", month);
+
+  // Foto do mês corrente (curva de evolução do patrimônio).
   if (month === monthOf()) {
     await db.run(
       `INSERT INTO mx_snapshots (month, assets, liabilities, netWorth, updatedAt) VALUES (?, ?, ?, ?, ?)
@@ -242,14 +305,52 @@ router.get('/summary', wrap(async (req, res) => {
   }
   const history = (await db.all('SELECT month, assets, liabilities, netWorth FROM mx_snapshots ORDER BY month DESC LIMIT 12')).reverse();
 
+  // ---- Alertas: o que fazer agora, em ordem de urgência ----
+  const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const insights = [];
+  const add = (level, title, text, link) => insights.push({ level, title, text, link });
+  const monthlyPayments = liabilities.reduce((s, l) => s + (l.monthlyPayment || 0), 0);
+
+  if (flow.income > 0 || flow.expense > 0) {
+    if (saved < 0) add('alert', 'Você gastou mais do que ganhou', `O mês fecha ${brl(-saved)} no vermelho. Corte as maiores categorias ou adie compras.`, '/mixco/fluxo');
+    else if (flow.income > 0 && saved / flow.income < 0.2) add('warn', 'Poupança abaixo de 20%', `Você guardou ${round2((saved / flow.income) * 100)}% da renda. Uma referência comum é 20% ou mais.`, '/mixco/fluxo');
+    else if (flow.income > 0) add('ok', 'Boa taxa de poupança', `Você guardou ${round2((saved / flow.income) * 100)}% da renda neste mês.`);
+  }
+  for (const b of budget.filter((x) => x.over)) {
+    add('alert', `${b.category} passou do limite`, `Gasto de ${brl(b.spent)} para um limite de ${brl(b.limit)} (${brl(b.spent - b.limit)} acima).`, '/mixco/fluxo');
+  }
+  if (flow.expense > 0 && !limits.size) add('info', 'Defina um orçamento', 'Sem limites por categoria não dá para saber se o gasto está sob controle. Comece pelas 3 maiores categorias.', '/mixco/fluxo');
+  if (emergencyMonths !== null) {
+    if (emergencyMonths < 3) add('alert', 'Reserva de emergência baixa', `Sua liquidez cobre ${emergencyMonths} meses de despesas. Priorize chegar a 6.`, '/mixco/metas');
+    else if (emergencyMonths < 6) add('warn', 'Reserva de emergência em construção', `Cobre ${emergencyMonths} meses; a meta usual é 6.`, '/mixco/metas');
+  }
+  if (cardDebt > 0 && liquid >= cardDebt) add('info', 'Fatura do cartão em aberto', `Há ${brl(cardDebt)} no cartão e você tem liquidez para pagar. Evite o rotativo.`);
+  else if (cardDebt > 0) add('alert', 'Fatura maior que a liquidez', `O cartão deve ${brl(cardDebt)} e sua liquidez é ${brl(liquid)}.`);
+  for (const l of liabilities.filter((x) => (x.monthlyRate || 0) >= 2)) {
+    add('warn', `Juros altos: ${l.name}`, `${l.monthlyRate}% ao mês. Dívidas caras costumam render mais pagar do que investir (método avalanche: quite a de maior juros primeiro).`, '/mixco/patrimonio');
+  }
+  if (flow.income > 0 && monthlyPayments / flow.income > 0.3) {
+    add('warn', 'Parcelas pesam na renda', `As parcelas somam ${round2((monthlyPayments / flow.income) * 100)}% da renda do mês (referência: até 30%).`, '/mixco/patrimonio');
+  }
+  const financial = allocation.filter((a) => !['imoveis', 'veiculos'].includes(a.assetClass));
+  const financialBase = financial.reduce((s, a) => s + a.value, 0);
+  const top = financial[0];
+  if (top && financial.length > 1 && financialBase > 0 && top.value / financialBase > 0.7) {
+    add('info', 'Carteira concentrada', `${round2((top.value / financialBase) * 100)}% do patrimônio financeiro está em "${top.assetClass}". Considere diversificar.`);
+  }
+  if (uncategorized > 0) add('info', `${uncategorized} lançamento(s) sem categoria`, 'Categorize para o orçamento refletir a realidade. Crie regras para automatizar.', '/mixco/fluxo');
+  const order = { alert: 0, warn: 1, info: 2, ok: 3 };
+  insights.sort((a, b) => order[a.level] - order[b.level]);
+
   res.json({
     month,
     netWorth: round2(netWorth),
     assets: round2(assetsTotal),
     liabilities: round2(liabilitiesTotal),
     cash: round2(cash),
+    cardDebt: round2(cardDebt),
     debtToAssets: assetsTotal > 0 ? round2((liabilitiesTotal / assetsTotal) * 100) : null,
-    monthlyDebtPayments: round2(liabilities.reduce((s, l) => s + (l.monthlyPayment || 0), 0)),
+    monthlyDebtPayments: round2(monthlyPayments),
     investments: {
       invested: round2(invested),
       current: round2(current),
@@ -262,13 +363,13 @@ router.get('/summary', wrap(async (req, res) => {
       expense: round2(flow.expense),
       saved: round2(saved),
       savingsRate: flow.income > 0 ? round2((saved / flow.income) * 100) : null,
+      previousExpense: round2(prevFlow.expense),
     },
+    trend,
     budget,
-    emergencyFund: {
-      liquid: round2(liquid),
-      avgMonthlyExpense: round2(avgExpense),
-      months: avgExpense > 0 ? round2(liquid / avgExpense) : null,
-    },
+    uncategorized,
+    emergencyFund: { liquid: round2(liquid), avgMonthlyExpense: round2(avgExpense), months: emergencyMonths },
+    insights,
     history,
   });
 }));

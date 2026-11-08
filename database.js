@@ -173,6 +173,48 @@ const initDb = async () => {
     );
   `);
 
+  // MiXCo: colunas da integração Pluggy (open finance) e tabelas de metas, regras e conexões.
+  const addColumn = async (table, col, ddl) => {
+    if (!(await columnsOf(db, table)).includes(col)) await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+  };
+  await addColumn('mx_accounts', 'source', "TEXT NOT NULL DEFAULT 'manual'");
+  await addColumn('mx_accounts', 'externalId', 'TEXT');
+  await addColumn('mx_accounts', 'itemId', 'TEXT');
+  await addColumn('mx_accounts', 'externalBalance', 'REAL');
+  await addColumn('mx_transactions', 'externalId', 'TEXT');
+  await addColumn('mx_assets', 'source', "TEXT NOT NULL DEFAULT 'manual'");
+  await addColumn('mx_assets', 'externalId', 'TEXT');
+  await addColumn('mx_assets', 'itemId', 'TEXT');
+  await db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_mx_acc_ext ON mx_accounts(externalId) WHERE externalId IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_mx_tx_ext ON mx_transactions(externalId) WHERE externalId IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_mx_asset_ext ON mx_assets(externalId) WHERE externalId IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS mx_pluggy_items (
+      itemId TEXT PRIMARY KEY,
+      connector TEXT,
+      status TEXT,
+      lastSyncAt TEXT,
+      lastError TEXT,
+      createdAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mx_goals (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      targetAmount REAL NOT NULL,
+      savedAmount REAL NOT NULL DEFAULT 0,
+      deadline TEXT NOT NULL
+    );
+
+    -- Regras de categorização: se a descrição contém a palavra, usa a categoria.
+    CREATE TABLE IF NOT EXISTS mx_rules (
+      id TEXT PRIMARY KEY,
+      keyword TEXT NOT NULL UNIQUE,
+      category TEXT NOT NULL
+    );
+  `);
+
   // Migração: transações antigas não tinham invoiceId.
   if (!(await columnsOf(db, 'transactions')).includes('invoiceId')) {
     await db.exec('ALTER TABLE transactions ADD COLUMN invoiceId TEXT');

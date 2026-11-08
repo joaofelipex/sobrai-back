@@ -73,7 +73,7 @@ test('patrimônio líquido, fluxo do mês, orçamento e reserva de emergência',
   assert.strictEqual(s.assets, 4000 + 2300 + 250000);
   assert.strictEqual(s.liabilities, 100000);
   assert.strictEqual(s.netWorth, 4000 + 2300 + 250000 - 100000);
-  assert.deepStrictEqual(s.flow, { income: 5000, expense: 2000, saved: 3000, savingsRate: 60 });
+  assert.deepStrictEqual(s.flow, { income: 5000, expense: 2000, saved: 3000, savingsRate: 60, previousExpense: 0 });
   assert.strictEqual(s.investments.profit, 300 + 50000);
   assert.strictEqual(s.monthlyDebtPayments, 1500);
 
