@@ -207,6 +207,16 @@ const initDb = async () => {
       deadline TEXT NOT NULL
     );
 
+    -- Contas fixas (aluguel, assinaturas, parcelas): vencem em um dia do mês.
+    CREATE TABLE IF NOT EXISTS mx_recurring (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      dayOfMonth INTEGER NOT NULL,
+      category TEXT NOT NULL DEFAULT 'Outros'
+    );
+
     -- Regras de categorização: se a descrição contém a palavra, usa a categoria.
     CREATE TABLE IF NOT EXISTS mx_rules (
       id TEXT PRIMARY KEY,

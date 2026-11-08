@@ -182,6 +182,24 @@ router.use('/goals', crud({
   },
 }));
 
+// ---- Contas fixas -------------------------------------------------------------------------
+router.use('/recurring', crud({
+  table: 'mx_recurring',
+  schema: {
+    description: { type: 'string', required: true },
+    type: { type: 'string', required: true, oneOf: ['income', 'expense'] },
+    amount: { type: 'number', required: true, positive: true },
+    dayOfMonth: { type: 'number', required: true },
+    category: { type: 'string' },
+  },
+  columns: ['description', 'type', 'amount', 'dayOfMonth', 'category'],
+  beforeWrite: async (db, row) => {
+    if (!Number.isInteger(row.dayOfMonth) || row.dayOfMonth < 1 || row.dayOfMonth > 31) throw new ValidationError('"dayOfMonth" deve ser um dia de 1 a 31');
+    row.category = row.category || 'Outros';
+  },
+  select: 'SELECT * FROM mx_recurring ORDER BY dayOfMonth',
+}));
+
 // ---- Regras de categorização --------------------------------------------------------------
 const rulesRouter = crud({
   table: 'mx_rules',
@@ -305,6 +323,23 @@ router.get('/summary', wrap(async (req, res) => {
   }
   const history = (await db.all('SELECT month, assets, liabilities, netWorth FROM mx_snapshots ORDER BY month DESC LIMIT 12')).reverse();
 
+  // ---- Contas fixas do mês: o que já foi pago (há lançamento com a mesma descrição) e o que falta ----
+  const today = new Date();
+  const isCurrent = month === monthOf(today);
+  const lastDay = new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0).getDate();
+  const monthTx = await db.all("SELECT description, type FROM mx_transactions WHERE substr(date, 1, 7) = ?", month);
+  const upcoming = (await db.all('SELECT * FROM mx_recurring ORDER BY dayOfMonth')).map((r) => {
+    const day = Math.min(r.dayOfMonth, lastDay);
+    const key = r.description.toLowerCase();
+    const paid = monthTx.some((t) => t.type === r.type && t.description.toLowerCase().includes(key));
+    return { id: r.id, description: r.description, type: r.type, amount: r.amount, category: r.category, day, paid,
+      overdue: isCurrent && !paid && day < today.getDate() };
+  });
+  const pending = upcoming.filter((u) => !u.paid);
+  const pendingOut = pending.filter((u) => u.type === 'expense').reduce((s, u) => s + u.amount, 0);
+  const pendingIn = pending.filter((u) => u.type === 'income').reduce((s, u) => s + u.amount, 0);
+  const projectedBalance = cash - cardDebt - pendingOut + pendingIn;
+
   // ---- Alertas: o que fazer agora, em ordem de urgência ----
   const brl = (v) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   const insights = [];
@@ -339,6 +374,9 @@ router.get('/summary', wrap(async (req, res) => {
     add('info', 'Carteira concentrada', `${round2((top.value / financialBase) * 100)}% do patrimônio financeiro está em "${top.assetClass}". Considere diversificar.`);
   }
   if (uncategorized > 0) add('info', `${uncategorized} lançamento(s) sem categoria`, 'Categorize para o orçamento refletir a realidade. Crie regras para automatizar.', '/mixco/fluxo');
+  const overdue = upcoming.filter((u) => u.overdue && u.type === 'expense');
+  if (overdue.length) add('alert', `${overdue.length} conta(s) fixa(s) sem registro`, `${overdue.map((o) => o.description).join(', ')}: o dia passou e não há lançamento. Já pagou? Registre ou sincronize.`, '/mixco/fluxo');
+  if (isCurrent && pendingOut > 0 && projectedBalance < 0) add('alert', 'Saldo não cobre as contas até o fim do mês', `Faltam ${brl(pendingOut)} em contas fixas e a projeção fecha em ${brl(projectedBalance)} (já descontada a fatura do cartão).`, '/mixco/fluxo');
   const order = { alert: 0, warn: 1, info: 2, ok: 3 };
   insights.sort((a, b) => order[a.level] - order[b.level]);
 
@@ -368,6 +406,8 @@ router.get('/summary', wrap(async (req, res) => {
     trend,
     budget,
     uncategorized,
+    upcoming,
+    projection: { pendingOut: round2(pendingOut), pendingIn: round2(pendingIn), projectedBalance: round2(projectedBalance) },
     emergencyFund: { liquid: round2(liquid), avgMonthlyExpense: round2(avgExpense), months: emergencyMonths },
     insights,
     history,

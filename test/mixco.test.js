@@ -101,3 +101,19 @@ test('conta com lançamentos não pode ser excluída; edição e exclusão de la
   assert.strictEqual((await j('DELETE', `/accounts/${acc.id}`)).status, 204);
   assert.strictEqual((await j('DELETE', `/accounts/${acc.id}`)).status, 404);
 });
+
+test('contas fixas: pagas x pendentes e projeção do mês', async () => {
+  const m = thisMonth();
+  const acc = (await j('POST', '/accounts', { name: 'Conta fixas', kind: 'checking', initialBalance: 1000 })).body;
+  assert.strictEqual((await j('POST', '/recurring', { description: 'Aluguel', type: 'expense', amount: 700, dayOfMonth: 40 })).status, 400);
+  await j('POST', '/recurring', { description: 'Aluguel', type: 'expense', amount: 700, dayOfMonth: 5 });
+  await j('POST', '/recurring', { description: 'Academia', type: 'expense', amount: 120, dayOfMonth: 28 });
+  await j('POST', '/transactions', { accountId: acc.id, type: 'expense', description: 'PIX ALUGUEL JOAO', amount: 700, date: `${m}-05` });
+
+  const s = (await j('GET', '/summary')).body;
+  const by = Object.fromEntries(s.upcoming.map((u) => [u.description, u]));
+  assert.strictEqual(by.Aluguel.paid, true);
+  assert.strictEqual(by.Academia.paid, false);
+  assert.strictEqual(s.projection.pendingOut, 120);
+  assert.strictEqual(s.projection.projectedBalance, s.cash - s.cardDebt - 120);
+});
