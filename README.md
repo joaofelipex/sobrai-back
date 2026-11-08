@@ -13,7 +13,7 @@ API REST em Node.js com SQLite, validação em todas as rotas e uma integração
 ![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)
 ![Express](https://img.shields.io/badge/Express-4-000000?style=for-the-badge&logo=express&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/testes-7_passando-2ea44f?style=for-the-badge)
+![Tests](https://img.shields.io/badge/testes-10_passando-2ea44f?style=for-the-badge)
 
 [**← Front-end do Sobrai**](https://github.com/joaofelipex/sobrai-front)
 
@@ -68,6 +68,7 @@ flowchart LR
 | `/api/company-profile` | `GET` `POST` `PUT` | `PUT` faz *upsert* |
 | `/api/insights` | `POST` | Recomendações via Gemini (chave só no servidor) |
 | `/api/fiscal` | `GET /status` · `GET/PUT /settings` · `GET/PUT/DELETE /certificate` | Dados fiscais e certificado A1 |
+| `/api/mixco` | `accounts` · `transactions` (`?month=AAAA-MM`) · `assets` · `liabilities` (CRUD) · `PUT/DELETE budgets/:categoria` · `GET summary` | **MiXCo**, gestão de patrimônio pessoal: o resumo calcula patrimônio líquido, alocação, fluxo e orçamento do mês, reserva de emergência e guarda uma foto mensal do patrimônio |
 | `/api/nfse` | `GET` · `POST /emitir` · `POST /:id/cancelar` · `GET /:id/xml` | Emissão, cancelamento e XML |
 
 <br>
@@ -165,13 +166,14 @@ Para ver a interface, rode também o [front-end](https://github.com/joaofelipex/
 npm test
 ```
 
-São **7 testes** (`node:test`):
+São **10 testes** (`node:test`):
 
 - XML da DPS válido no **XSD oficial** (MEI com tomador; Simples sem tomador)
 - DPS assinada: valida no XSD, a assinatura confere e **adulteração é detectada**
 - Evento de cancelamento assinado válido no XSD
 - Certificado com senha errada ou vencido é recusado
 - Criptografia do segredo (e exigência de `NFSE_SECRET`)
+- **MiXCo:** validação, saldo das contas, patrimônio líquido, fluxo e orçamento do mês, reserva de emergência e bloqueio de exclusão de conta com lançamentos
 - **Fluxo completo** com o backend real em outro processo e uma SEFIN falsa em HTTPS com mTLS: configuração, certificado (senha errada e CNPJ divergente), rejeição, emissão, bloqueio de duplicidade e cancelamento
 
 <br>
