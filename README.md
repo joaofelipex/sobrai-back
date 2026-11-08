@@ -139,6 +139,7 @@ cd sobrai-back
 npm install
 cp .env.example .env     # opcional
 npm run dev              # http://localhost:3001
+npm run pluggy:check     # confere as credenciais da Pluggy (opcional: -- <itemId>)
 node seed.js             # dados de exemplo (não apaga nada)
 ```
 

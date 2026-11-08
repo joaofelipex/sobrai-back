@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "pluggy:check": "node scripts/pluggy-check.js"
   },
   "keywords": [],
   "author": "",
