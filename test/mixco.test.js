@@ -106,7 +106,9 @@ test('contas fixas: pagas x pendentes e projeção do mês', async () => {
   const m = thisMonth();
   const acc = (await j('POST', '/accounts', { name: 'Conta fixas', kind: 'checking', initialBalance: 1000 })).body;
   assert.strictEqual((await j('POST', '/recurring', { description: 'Aluguel', type: 'expense', amount: 700, dayOfMonth: 40 })).status, 400);
-  await j('POST', '/recurring', { description: 'Aluguel', type: 'expense', amount: 700, dayOfMonth: 5 });
+  const created = await j('POST', '/recurring', { description: 'Aluguel', type: 'expense', amount: 700, dayOfMonth: 5 });
+  assert.strictEqual(created.status, 201);
+  assert.strictEqual(created.body.dayOfMonth, 5);
   await j('POST', '/recurring', { description: 'Academia', type: 'expense', amount: 120, dayOfMonth: 28 });
   await j('POST', '/transactions', { accountId: acc.id, type: 'expense', description: 'PIX ALUGUEL JOAO', amount: 700, date: `${m}-05` });
 

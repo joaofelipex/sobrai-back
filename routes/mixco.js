@@ -35,13 +35,13 @@ const shiftMonth = (m, delta) => {
 };
 
 /** Monta GET/POST/PUT/DELETE para uma tabela simples. `select` não pode ter WHERE no nível externo. */
-function crud({ table, schema, columns, beforeWrite, beforeDelete, select }) {
+function crud({ table, schema, columns, beforeWrite, beforeDelete, select, orderBy }) {
   const r = express.Router();
   const list = select || `SELECT * FROM ${table}`;
 
   r.get('/', wrap(async (req, res) => {
     const db = await openDb();
-    res.json(await db.all(list));
+    res.json(await db.all(orderBy ? `${list} ORDER BY ${orderBy}` : list));
   }));
 
   r.post('/', wrap(async (req, res) => {
@@ -197,7 +197,7 @@ router.use('/recurring', crud({
     if (!Number.isInteger(row.dayOfMonth) || row.dayOfMonth < 1 || row.dayOfMonth > 31) throw new ValidationError('"dayOfMonth" deve ser um dia de 1 a 31');
     row.category = row.category || 'Outros';
   },
-  select: 'SELECT * FROM mx_recurring ORDER BY dayOfMonth',
+  orderBy: 'dayOfMonth',
 }));
 
 // ---- Regras de categorização --------------------------------------------------------------
