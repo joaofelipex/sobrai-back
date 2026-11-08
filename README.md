@@ -13,7 +13,7 @@ API REST em Node.js com SQLite, validação em todas as rotas e uma integração
 ![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)
 ![Express](https://img.shields.io/badge/Express-4-000000?style=for-the-badge&logo=express&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/testes-10_passando-2ea44f?style=for-the-badge)
+![Tests](https://img.shields.io/badge/testes-16_passando-2ea44f?style=for-the-badge)
 
 [**← Front-end do Sobrai**](https://github.com/joaofelipex/sobrai-front)
 
@@ -69,6 +69,8 @@ flowchart LR
 | `/api/insights` | `POST` | Recomendações via Gemini (chave só no servidor) |
 | `/api/fiscal` | `GET /status` · `GET/PUT /settings` · `GET/PUT/DELETE /certificate` | Dados fiscais e certificado A1 |
 | `/api/mixco` | `accounts` · `transactions` (`?month=AAAA-MM`) · `assets` · `liabilities` (CRUD) · `PUT/DELETE budgets/:categoria` · `GET summary` | **MiXCo**, gestão de patrimônio pessoal: o resumo calcula patrimônio líquido, alocação, fluxo e orçamento do mês, reserva de emergência e guarda uma foto mensal do patrimônio |
+| `/api/mixco/pluggy` | `GET status` · `POST connect-token` · `POST items {itemId}` · `POST sync` · `DELETE items/:itemId` | Open finance via Pluggy: importa contas, lançamentos efetivados e investimentos; idempotente (`externalId`); cartão vira dívida; pagamento de fatura fica fora do fluxo |
+| `/api/mixco/goals` · `/rules` | CRUD · `POST rules/apply` | Metas pessoais e regras de categoria por palavra na descrição |
 | `/api/nfse` | `GET` · `POST /emitir` · `POST /:id/cancelar` · `GET /:id/xml` | Emissão, cancelamento e XML |
 
 <br>
@@ -152,6 +154,7 @@ node seed.js             # dados de exemplo (não apaga nada)
 | `NFSE_AMBIENTE` / `NFSE_ALLOW_PRODUCTION` | Produção da NFS-e (exige as duas). Padrão: homologação |
 | `NFSE_CA_FILE` | Cadeia ICP-Brasil (`.pem`), se a validação TLS da SEFIN falhar |
 | `CORS_ORIGIN` | Origens aceitas pela API (separadas por vírgula) |
+| `PLUGGY_CLIENT_ID` / `PLUGGY_CLIENT_SECRET` | Credenciais da Pluggy (open finance) para o MiXCo |
 | `PORT` | Porta da API (padrão `3001`) |
 
 </details>
@@ -166,7 +169,7 @@ Para ver a interface, rode também o [front-end](https://github.com/joaofelipex/
 npm test
 ```
 
-São **10 testes** (`node:test`):
+São **16 testes** (`node:test`):
 
 - XML da DPS válido no **XSD oficial** (MEI com tomador; Simples sem tomador)
 - DPS assinada: valida no XSD, a assinatura confere e **adulteração é detectada**
@@ -174,6 +177,7 @@ São **10 testes** (`node:test`):
 - Certificado com senha errada ou vencido é recusado
 - Criptografia do segredo (e exigência de `NFSE_SECRET`)
 - **MiXCo:** validação, saldo das contas, patrimônio líquido, fluxo e orçamento do mês, reserva de emergência e bloqueio de exclusão de conta com lançamentos
+- **MiXCo + Pluggy:** backend real contra uma Pluggy simulada (autenticação com a apiKey reaproveitada, importação, cartão como dívida, fatura fora do fluxo, regras, deduplicação, 503 sem credenciais)
 - **Fluxo completo** com o backend real em outro processo e uma SEFIN falsa em HTTPS com mTLS: configuração, certificado (senha errada e CNPJ divergente), rejeição, emissão, bloqueio de duplicidade e cancelamento
 
 <br>
