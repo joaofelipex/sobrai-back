@@ -119,3 +119,22 @@ test('contas fixas: pagas x pendentes e projeção do mês', async () => {
   assert.strictEqual(s.projection.pendingOut, 120);
   assert.strictEqual(s.projection.projectedBalance, s.cash - s.cardDebt - 120);
 });
+
+test('reserva de emergência usa só os meses com dados e conta fixa é paga por valor/data', async () => {
+  const d = new Date();
+  const prev = new Date(d.getFullYear(), d.getMonth() - 1, 10);
+  const pm = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+  const acc = (await j('POST', '/accounts', { name: 'Conta reserva', kind: 'checking', initialBalance: 0 })).body;
+  await j('POST', '/transactions', { accountId: acc.id, type: 'expense', description: 'Gastos', amount: 3000, date: `${pm}-10` });
+  const s = (await j('GET', '/summary')).body;
+  assert.strictEqual(s.emergencyFund.avgMonthlyExpense > 0, true);
+  // Só 1 mês com dados anteriores: a média é o gasto daquele mês, não gasto/3.
+  const dbBefore = s.emergencyFund.avgMonthlyExpense;
+  assert.ok(dbBefore >= 3000, `média ${dbBefore}`);
+
+  const m = thisMonth();
+  await j('POST', '/recurring', { description: 'Condomínio', type: 'expense', amount: 450, dayOfMonth: 10 });
+  await j('POST', '/transactions', { accountId: acc.id, type: 'expense', description: 'PIX ADMINISTRADORA XYZ', amount: 450, date: `${m}-09` });
+  const up = (await j('GET', '/summary')).body.upcoming.find((u) => u.description === 'Condomínio');
+  assert.strictEqual(up.paid, true);
+});

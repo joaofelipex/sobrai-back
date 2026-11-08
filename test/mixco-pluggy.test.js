@@ -27,6 +27,10 @@ const ACCOUNTS = [
   { id: 'acc-bank', type: 'BANK', subtype: 'CHECKING_ACCOUNT', name: 'Conta', marketingName: 'Conta Corrente', balance: 5000 },
   { id: 'acc-card', type: 'CREDIT', subtype: 'CREDIT_CARD', name: 'Cartão', balance: 800 },
 ];
+const INVESTMENTS = [
+  { id: 'inv1', name: 'CDB 110% CDI', type: 'FIXED_INCOME', balance: 10500, amountOriginal: 10000 },
+  { id: 'inv2', name: 'HGLG11', type: 'ETF', subtype: 'REAL_ESTATE_FUND', balance: 3000, amountProfit: -200 },
+];
 const TXS = {
   'acc-bank': [
     { id: 'tx1', description: 'SALARIO EMPRESA', amount: 8000, type: 'CREDIT', date: `${today}T10:00:00.000Z`, category: 'Salary', status: 'POSTED' },
@@ -55,14 +59,12 @@ test.before(async () => {
       }
       if (req.headers['x-api-key'] !== 'KEY123') return send(403, { message: 'sem apiKey' });
       if (url.pathname === '/connect_token') return send(200, { accessToken: 'CONNECT-TOKEN' });
+      if (url.pathname === '/items/item-updating') return send(200, { id: 'item-updating', status: 'UPDATING', connector: { name: 'Banco Lento' } });
       if (url.pathname === '/items/item-ok') return send(200, { id: 'item-ok', status: 'UPDATED', connector: { name: 'Banco Teste' } });
       if (url.pathname.startsWith('/items/')) return send(404, { message: 'Item not found' });
       if (url.pathname === '/accounts') return send(200, { results: ACCOUNTS, totalPages: 1 });
       if (url.pathname === '/transactions') return send(200, { results: TXS[url.searchParams.get('accountId')] || [], totalPages: 1 });
-      if (url.pathname === '/investments') return send(200, { results: [
-        { id: 'inv1', name: 'CDB 110% CDI', type: 'FIXED_INCOME', balance: 10500, amountOriginal: 10000 },
-        { id: 'inv2', name: 'HGLG11', type: 'ETF', subtype: 'REAL_ESTATE_FUND', balance: 3000, amountProfit: -200 },
-      ], totalPages: 1 });
+      if (url.pathname === '/investments') return send(200, { results: INVESTMENTS, totalPages: 1 });
       send(404, { message: 'rota desconhecida' });
     });
   });
@@ -146,6 +148,41 @@ test('metas, regras em lote e remoção do vínculo', async () => {
 
   assert.strictEqual((await j('DELETE', '/pluggy/items/item-ok')).status, 204);
   assert.strictEqual((await j('GET', '/accounts')).body.length, 2); // dados importados permanecem
+});
+
+test('regra vazia ou repetida é recusada (400), não vira 500 nem casa com tudo', async () => {
+  assert.strictEqual((await j('POST', '/rules', { keyword: '   ', category: 'Lazer' })).status, 400);
+  assert.strictEqual((await j('POST', '/rules', { keyword: 'PADARIA', category: 'Lazer' })).status, 400); // já existe "padaria"
+});
+
+test('conexão ainda coletando (UPDATING) não avança a janela de sincronização', async () => {
+  const r = await j('POST', '/pluggy/items', { itemId: 'item-updating' });
+  assert.strictEqual(r.status, 201);
+  const item = (await j('GET', '/pluggy/status')).body.items.find((i) => i.itemId === 'item-updating');
+  assert.strictEqual(item.lastSyncAt, null);
+  assert.match(item.lastError, /ainda está coletando/);
+  await j('DELETE', '/pluggy/items/item-updating');
+});
+
+test('lançamento importado que o usuário apagou não volta; investimento resgatado some', async () => {
+  await j('POST', '/pluggy/items', { itemId: 'item-ok' });
+  const txs = (await j('GET', '/transactions')).body;
+  const salary = txs.find((t) => t.description === 'SALARIO EMPRESA');
+  assert.ok(salary);
+  assert.strictEqual((await j('DELETE', `/transactions/${salary.id}`)).status, 204);
+  INVESTMENTS.pop(); // resgatou o HGLG11
+  await j('POST', '/pluggy/sync');
+  assert.ok(!(await j('GET', '/transactions')).body.some((t) => t.description === 'SALARIO EMPRESA'));
+  const assets = (await j('GET', '/assets')).body.map((a) => a.name);
+  assert.ok(!assets.includes('HGLG11') && assets.includes('CDB 110% CDI'));
+});
+
+test('remover a conexão preserva o saldo como cadastro manual', async () => {
+  const before = (await j('GET', '/accounts')).body.find((a) => a.kind === 'checking').balance;
+  assert.strictEqual((await j('DELETE', '/pluggy/items/item-ok')).status, 204);
+  const acc = (await j('GET', '/accounts')).body.find((a) => a.kind === 'checking');
+  assert.strictEqual(acc.source, 'manual');
+  assert.strictEqual(acc.balance, before);
 });
 
 test('sem credenciais configuradas, a API responde 503 de forma clara', async () => {

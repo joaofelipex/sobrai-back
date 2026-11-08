@@ -55,8 +55,15 @@ router.post('/sync', guard(async (req, res) => {
 // Remove só o vínculo: contas e lançamentos já importados continuam no MiXCo.
 router.delete('/items/:itemId', wrap(async (req, res) => {
   const db = await openDb();
-  const result = await db.run('DELETE FROM mx_pluggy_items WHERE itemId = ?', req.params.itemId);
-  if (!result.changes) return res.status(404).json({ message: 'Conexão não encontrada' });
+  const exists = await db.get('SELECT 1 FROM mx_pluggy_items WHERE itemId = ?', req.params.itemId);
+  if (!exists) return res.status(404).json({ message: 'Conexão não encontrada' });
+  // O que foi importado vira cadastro manual com o último saldo, em vez de ficar congelado como "do banco".
+  await db.run(
+    `UPDATE mx_accounts SET initialBalance = externalBalance - COALESCE((SELECT SUM(CASE t.type WHEN 'income' THEN t.amount ELSE -t.amount END)
+        FROM mx_transactions t WHERE t.accountId = mx_accounts.id), 0),
+      source = 'manual', externalBalance = NULL WHERE itemId = ? AND source = 'pluggy' AND externalBalance IS NOT NULL`, req.params.itemId);
+  await db.run("UPDATE mx_assets SET source = 'manual' WHERE itemId = ? AND source = 'pluggy'", req.params.itemId);
+  await db.run('DELETE FROM mx_pluggy_items WHERE itemId = ?', req.params.itemId);
   res.status(204).send();
 }));
 

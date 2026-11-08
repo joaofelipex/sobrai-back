@@ -217,6 +217,11 @@ const initDb = async () => {
       category TEXT NOT NULL DEFAULT 'Outros'
     );
 
+    -- Lançamentos importados que o usuário apagou: a sincronização não os traz de volta.
+    CREATE TABLE IF NOT EXISTS mx_tombstones (
+      externalId TEXT PRIMARY KEY
+    );
+
     -- Regras de categorização: se a descrição contém a palavra, usa a categoria.
     CREATE TABLE IF NOT EXISTS mx_rules (
       id TEXT PRIMARY KEY,

@@ -58,7 +58,7 @@ function crud({ table, schema, columns, beforeWrite, beforeDelete, select, order
   r.put('/:id', wrap(async (req, res) => {
     const db = await openDb();
     const row = validate(req.body, schema);
-    if (beforeWrite) await beforeWrite(db, row);
+    if (beforeWrite) await beforeWrite(db, row, req.params.id);
     const result = await db.run(
       `UPDATE ${table} SET ${columns.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`,
       [...columns.map((c) => row[c] ?? null), req.params.id]
@@ -105,6 +105,11 @@ router.use('/accounts', crud({
 // ---- Lançamentos ------------------------------------------------------------------------
 const txRouter = crud({
   table: 'mx_transactions',
+  beforeDelete: async (db, id) => {
+    const t = await db.get('SELECT externalId FROM mx_transactions WHERE id = ?', id);
+    if (t?.externalId) await db.run('INSERT OR IGNORE INTO mx_tombstones (externalId) VALUES (?)', t.externalId);
+    return null;
+  },
   schema: {
     accountId: { type: 'string', required: true },
     type: { type: 'string', required: true, oneOf: ['income', 'expense'] },
@@ -205,7 +210,12 @@ const rulesRouter = crud({
   table: 'mx_rules',
   schema: { keyword: { type: 'string', required: true }, category: { type: 'string', required: true } },
   columns: ['keyword', 'category'],
-  beforeWrite: async (db, row) => { row.keyword = row.keyword.trim(); },
+  beforeWrite: async (db, row, id) => {
+    row.keyword = row.keyword.trim();
+    if (!row.keyword) throw new ValidationError('"keyword" não pode ser vazio');
+    const dup = await db.get('SELECT id FROM mx_rules WHERE keyword = ? COLLATE NOCASE AND id IS NOT ?', [row.keyword, id ?? null]);
+    if (dup) throw new ValidationError('Já existe uma regra com essa palavra');
+  },
 });
 // Reclassifica o que ficou em "Outros" usando as regras atuais.
 router.post('/rules/apply', wrap(async (req, res) => {
@@ -303,9 +313,10 @@ router.get('/summary', wrap(async (req, res) => {
 
   // Reserva de emergência: liquidez ÷ despesa média dos 3 meses anteriores ao mês escolhido.
   const past = await db.get(
-    `SELECT COALESCE(SUM(amount), 0) AS total FROM mx_transactions
+    `SELECT COALESCE(SUM(amount), 0) AS total, COUNT(DISTINCT substr(date, 1, 7)) AS months FROM mx_transactions
      WHERE type = 'expense' AND substr(date, 1, 7) >= ? AND substr(date, 1, 7) < ? AND ${REAL_FLOW}`, [shiftMonth(month, -3), month]);
-  const avgExpense = past.total / 3;
+  // Média só sobre os meses que têm dados: quem começou há 1 mês não divide por 3.
+  const avgExpense = past.months ? past.total / past.months : 0;
   const liquid = Math.max(cash, 0) + assets.filter((a) => LIQUID_CLASSES.includes(a.assetClass)).reduce((s, a) => s + a.currentValue, 0);
   const emergencyMonths = avgExpense > 0 ? round2(liquid / avgExpense) : null;
 
@@ -327,11 +338,15 @@ router.get('/summary', wrap(async (req, res) => {
   const today = new Date();
   const isCurrent = month === monthOf(today);
   const lastDay = new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0).getDate();
-  const monthTx = await db.all("SELECT description, type FROM mx_transactions WHERE substr(date, 1, 7) = ?", month);
+  const monthTx = await db.all("SELECT description, type, amount, date FROM mx_transactions WHERE substr(date, 1, 7) = ? AND " + REAL_FLOW, month);
   const upcoming = (await db.all('SELECT * FROM mx_recurring ORDER BY dayOfMonth')).map((r) => {
     const day = Math.min(r.dayOfMonth, lastDay);
     const key = r.description.toLowerCase();
-    const paid = monthTx.some((t) => t.type === r.type && t.description.toLowerCase().includes(key));
+    // Pago = lançamento com a descrição da conta fixa OU de valor igual (±1%) perto do vencimento
+    // (o extrato do banco costuma dizer "PIX IMOBILIARIA XYZ" e não "Aluguel").
+    const paid = monthTx.some((t) => t.type === r.type && (
+      t.description.toLowerCase().includes(key) ||
+      (Math.abs(t.amount - r.amount) <= r.amount * 0.01 && Math.abs(Number(t.date.slice(8, 10)) - day) <= 5)));
     return { id: r.id, description: r.description, type: r.type, amount: r.amount, category: r.category, day, paid,
       overdue: isCurrent && !paid && day < today.getDate() };
   });
