@@ -117,6 +117,62 @@ const initDb = async () => {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_nfse_active ON nfse_documents(invoiceId) WHERE status IN ('processing', 'authorized');
   `);
 
+  // MiXCo: gestão de patrimônio pessoal (tabelas com prefixo mx_, independentes do restante).
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS mx_accounts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      institution TEXT,
+      initialBalance REAL NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS mx_transactions (
+      id TEXT PRIMARY KEY,
+      accountId TEXT NOT NULL REFERENCES mx_accounts(id),
+      type TEXT NOT NULL,
+      description TEXT NOT NULL,
+      amount REAL NOT NULL,
+      date TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'Outros'
+    );
+    CREATE INDEX IF NOT EXISTS idx_mx_tx_date ON mx_transactions(date);
+    CREATE INDEX IF NOT EXISTS idx_mx_tx_account ON mx_transactions(accountId);
+
+    CREATE TABLE IF NOT EXISTS mx_assets (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      assetClass TEXT NOT NULL,
+      institution TEXT,
+      invested REAL NOT NULL DEFAULT 0,
+      currentValue REAL NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS mx_liabilities (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      balance REAL NOT NULL,
+      monthlyRate REAL,
+      monthlyPayment REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS mx_budgets (
+      category TEXT PRIMARY KEY,
+      monthlyLimit REAL NOT NULL
+    );
+
+    -- Uma foto do patrimônio por mês (o mês corrente é atualizado a cada consulta do resumo).
+    CREATE TABLE IF NOT EXISTS mx_snapshots (
+      month TEXT PRIMARY KEY,
+      assets REAL NOT NULL,
+      liabilities REAL NOT NULL,
+      netWorth REAL NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+  `);
+
   // Migração: transações antigas não tinham invoiceId.
   if (!(await columnsOf(db, 'transactions')).includes('invoiceId')) {
     await db.exec('ALTER TABLE transactions ADD COLUMN invoiceId TEXT');

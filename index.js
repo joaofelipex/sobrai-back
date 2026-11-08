@@ -15,6 +15,7 @@ const recurringRouter = require('./routes/recurring');
 const insightsRouter = require('./routes/insights');
 const fiscalRouter = require('./routes/fiscal');
 const nfseRouter = require('./routes/nfse');
+const mixcoRouter = require('./routes/mixco');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -32,6 +33,7 @@ app.use('/api/recurring', recurringRouter);
 app.use('/api/insights', insightsRouter);
 app.use('/api/fiscal', fiscalRouter);
 app.use('/api/nfse', nfseRouter);
+app.use('/api/mixco', mixcoRouter);
 
 app.use(errorHandler);
 
